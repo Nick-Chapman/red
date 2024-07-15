@@ -1,0 +1,4 @@
+(library
+ ((name redlib)
+  (libraries
+   (core))))
