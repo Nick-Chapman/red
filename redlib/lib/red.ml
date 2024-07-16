@@ -1,16 +1,55 @@
 
-open Core.Std
-
+open Printf
 let debug = ref false
 
 let structural_compare = compare
-let structural_equal = Polymorphic_compare.equal
-open No_polymorphic_compare
-let _ = (=)
+let structural_equal = (=)
+let phys_equal = (==)
 
-let make_hashable ~hash ~compare =
-  let sexp_of_t = (fun _ -> assert false) in
-  {Hashtbl.Hashable. hash; compare; sexp_of_t}
+let upto : int -> int -> int list = fun i j ->
+  let rec loop acc i = if i > j then List.rev acc else loop (i::acc) (i+1) in
+  loop [] i
+
+let implode chars =
+  let bytes = Bytes.create (List.length chars) in
+  List.iteri (Bytes.set bytes) chars;
+  String.of_bytes bytes
+
+let explode s =
+  List.map (fun i -> s.[i]) (upto 0 (String.length s - 1))
+
+module Char = struct
+  include Char
+  let get_digit c : int option =
+    let code0 = Char.code '0' in
+    if c >= '0' && c <= '9' then Some (code c - code0) else None
+end
+
+module String = struct
+  include String
+  let slice s p q = String.sub s p (q-p)
+end
+
+module List = struct
+  include List
+  let group : break:('a -> 'a -> bool) -> 'a list -> 'a list list = fun ~break xs ->
+    List.of_seq (Seq.map List.of_seq (Seq.group break (List.to_seq xs)))
+end
+
+module Hashtbl : sig
+  include module type of Hashtbl
+  val find_or_add : ('k,'v) t -> 'k -> default:(unit -> 'v) -> 'v
+  val data : ('k,'v) t -> 'v list
+end = struct
+  include Hashtbl
+  let find_or_add ht k ~default =
+    match Hashtbl.find_opt ht k with
+    | Some v -> v
+    | None -> let v = default () in Hashtbl.add ht k v; v
+  let data ht =
+    let f _ v acc = v::acc in
+    Hashtbl.fold f ht []
+end
 
 type strat =
 [
@@ -23,19 +62,17 @@ type strat =
 let message fmt = ksprintf (fun s -> eprintf "%s\n%!" s) fmt
 
 let char_range c1 c2 =
-  List.map (List.range (Char.to_int c1) (1 + Char.to_int c2)) ~f:Char.of_int_exn
+  List.map Char.chr (upto (Char.code c1) (Char.code c2))
 
-TEST = String.equal (String.of_char_list (char_range 'a' 'a')) "a"
-TEST = String.equal (String.of_char_list (char_range 'a' 'e')) "abcde"
-TEST = String.equal (String.of_char_list (char_range 'e' 'a')) ""
-TEST = String.equal (String.of_char_list (char_range 'b' 'a')) ""
+let%test _ = String.equal (implode (char_range 'a' 'a')) "a"
+let%test _ = String.equal (implode (char_range 'a' 'e')) "abcde"
+let%test _ = String.equal (implode (char_range 'e' 'a')) ""
+let%test _ = String.equal (implode (char_range 'b' 'a')) ""
 
 let sort_and_remove_dups ~compare xs =
-  let xs = List.dedup ~compare xs in
-    (*let xs = List.sort ~cmp:compare xs in (* nesc? *)*)
-  xs
+  List.sort_uniq compare xs
 
-let filter_out xs ~f = List.filter xs ~f:(fun x -> not (f x))
+let filter_out xs ~f = List.filter (fun x -> not (f x)) xs
 
 let rec iterate i f acc =
   if Int.equal i 0 then acc else iterate (i-1) f (f acc)
@@ -65,13 +102,13 @@ end = struct
   let create xs =
     sort_and_remove_dups ~compare:Char.compare xs
 
-  let any = create (List.map (List.range 0 256) ~f:Char.of_int_exn)
+  let any = create (List.map Char.chr (upto 0 255))
 
   let is_empty = function [] -> true | _::_ -> false
 
   let pick_one_exn = function [] -> failwith "pick_one_exn" | x::_ -> x
 
-  let contains t char = List.mem t char
+  let contains t char = List.mem char t
 
   let intersect =
     let rec loop acc xs1 xs2 =
@@ -81,7 +118,7 @@ end = struct
       | (x1::xs1 as again1), (x2::xs2 as again2) ->
         if Char.equal x1 x2 then loop (x1::acc) xs1 xs2
         else
-          if Char.(<) x1 x2
+          if x1 < x2
           then loop acc xs1 again2
           else loop acc again1 xs2
     in
@@ -95,7 +132,7 @@ end = struct
       | (x1::xs1 as again1), (x2::xs2 as again2) ->
         if Char.equal x1 x2 then loop (x1::acc) xs1 xs2
         else
-          if Char.(<) x1 x2
+          if x1 < x2
           then loop (x1::acc) xs1 again2
           else loop (x2::acc) again1 xs2
     in
@@ -109,28 +146,25 @@ end = struct
       | (x1::xs1 as again1), (x2::xs2 as again2) ->
         if Char.equal x1 x2 then loop acc xs1 xs2
         else
-          if Char.(<) x1 x2
+          if x1 < x2
           then loop (x1::acc) xs1 again2
           else loop acc again1 xs2
     in
     loop []
 
-  let mk string = create (String.to_list string)
-
+  let mk string = create (explode string)
   let (=) = structural_equal
   let (!=) x y = not (x = y)
-
-  TEST = mk "xyz" = mk "xzy"
-  TEST = mk "xyz" != mk "xzw"
-  TEST = intersect (mk "abcd") (mk "acxy") = mk "ac"
-  TEST = union (mk "abcd") (mk "acxy") = mk "abcdxy"
-  TEST = diff (mk "abcd") (mk "acxy") = mk "bd"
+  let%test _ = mk "xyz" = mk "xzy"
+  let%test _ = mk "xyz" != mk "xzw"
+  let%test _ = intersect (mk "abcd") (mk "acxy") = mk "ac"
+  let%test _ = union (mk "abcd") (mk "acxy") = mk "abcdxy"
+  let%test _ = diff (mk "abcd") (mk "acxy") = mk "bd"
 
   let compare = structural_compare
-
 end
 
-module F(M:sig end) = struct
+module F() = struct
 
   type sense = Pos | Neg
 
@@ -145,33 +179,6 @@ module F(M:sig end) = struct
     | Cat2 of 'a * 'a
     | Alts of 'a list
 
-    let compare ~compare t1 t2 =
-      match t1,t2 with
-      | Eps, Eps -> 0
-      | Poslit x1, Poslit x2 -> structural_compare x1 x2
-      | Neglit x1, Neglit x2 -> structural_compare x1 x2
-      | Star x1, Star x2 -> compare x1 x2
-      | Neg x1, Neg x2 -> compare x1 x2
-      | Cat2 (x1,y1), Cat2 (x2,y2) -> List.compare ~cmp:compare [x1;y1] [x2;y2]
-      | Alts xs1, Alts xs2 -> List.compare ~cmp:compare xs1 xs2
-      | Eps,_ -> -1 | _,Eps -> 1
-      | Poslit _,_ -> -1 | _,Poslit _ -> 1
-      | Neglit _,_ -> -1 | _,Neglit _ -> 1
-      | Star _,_ -> -1 | _,Star _ -> 1
-      | Neg _,_ -> -1 | _,Neg _ -> 1
-      | Cat2 _,_ -> -1 | _,Cat2 _ -> 1
-      (*| Alts _,_ -> -1 | _,Alts _ -> 1*)
-
-    let hash ~hash t =
-      match t with
-      | Eps -> 0
-      | Poslit x -> Hashtbl.hash (1, Hashtbl.hash x)
-      | Neglit x -> Hashtbl.hash (2, Hashtbl.hash x)
-      | Star x -> Hashtbl.hash (3, hash x)
-      | Neg x -> Hashtbl.hash (4, hash x)
-      | Cat2 (x1,x2) -> Hashtbl.hash (5, hash x1, hash x2)
-      | Alts xs -> Hashtbl.hash (6, List.map ~f:hash xs)
-
     let nullable ~nullable form =
       match form with
       | Eps -> true
@@ -180,7 +187,7 @@ module F(M:sig end) = struct
       | Star _ -> true
       | Neg t -> not (nullable t)
       | Cat2 (t1,t2) -> nullable t1 && nullable t2
-      | Alts ts -> List.exists ts ~f:nullable
+      | Alts ts -> List.exists nullable ts
 
     let firsts ~firsts form =
       match form with
@@ -190,7 +197,7 @@ module F(M:sig end) = struct
       | Star t -> firsts t
       | Neg t -> firsts t
       | Cat2 (t1,t2) -> firsts t1 @ firsts t2
-      | Alts ts -> List.concat_map ts ~f:firsts
+      | Alts ts -> List.concat_map firsts ts
 
   end
 
@@ -218,7 +225,7 @@ module F(M:sig end) = struct
     let cset cset =
       match (Cset.rep cset) with
       | [x] -> of_char x
-      | xs -> sprintf "[%s]" (String.concat (List.map xs ~f:of_char))
+      | xs -> sprintf "[%s]" (String.concat "" (List.map of_char xs))
 
     let cspec sense cset =
       let xs = Cset.rep cset in
@@ -228,7 +235,7 @@ module F(M:sig end) = struct
       | _,_ ->
         sprintf "[%s%s]"
           (match sense with Pos -> "" | Neg -> "^")
-          (String.concat (List.map xs ~f:of_char))
+          (String.concat "" (List.map of_char xs))
 
     let form ~unroll =
 
@@ -243,14 +250,14 @@ module F(M:sig end) = struct
         | Form.Cat2 (t1,t2) -> sprintf "%s%s" (to_string t1) (to_string t2)
         | Form.Alts [] -> "[]"
         | Form.Alts ts ->
-          sprintf "(%s)" (String.concat ~sep:"|" (List.map ts ~f:to_string))
+          sprintf "(%s)" (String.concat "|" (List.map to_string ts))
 
       and to_string_neg t =
         match (unroll t) with
         | Form.Neg t -> to_string t
         | Form.Alts [] -> ".*"
         | Form.Alts ts ->
-          sprintf "(%s)" (String.concat ~sep:"&" (List.map ts ~f:to_string_neg))
+          sprintf "(%s)" (String.concat "&" (List.map to_string_neg ts))
         | _ -> sprintf "(!%s)" (to_string t)
 
       and to_string' t = (*to_string t*) (* temp while have fully parenthesized cat2 *)
@@ -269,16 +276,16 @@ module F(M:sig end) = struct
     (* critical for efficiency to remove dups *)
     let csets = sort_and_remove_dups ~compare:Cset.compare csets in
     let acc,cover =
-      List.fold csets ~init:([],Cset.create[]) ~f:fun (acc,cover) cset ->
+      List.fold_left (fun (acc,cover) cset ->
         let acc =
           filter_out ~f:Cset.is_empty (
             Cset.diff cset cover ::
-              List.concat_map acc ~f:fun in1 -> [
+              List.concat_map (fun in1 -> [
                 Cset.intersect in1 cset;
                 Cset.diff in1 cset;
-              ]
+              ]) acc
           )
-        in acc, Cset.union cover cset
+        in acc, Cset.union cover cset) ([],Cset.create[]) csets
     in
     (* sort result to get dfa display in order *)
     let acc = sort_and_remove_dups ~compare:Cset.compare acc in
@@ -321,7 +328,6 @@ module F(M:sig end) = struct
     val repeat_count_or_more : t -> int -> t
     val repeat_count_range : t -> int -> int -> t
 
-    val hashable : t Hashtbl.Hashable.t
     val equal : t -> t -> bool
     val compare : t -> t -> int
 
@@ -349,12 +355,9 @@ module F(M:sig end) = struct
     let to_string = Display.form ~unroll
 
     let tag t = t.u
-    let hash t = t.u
 
     let equal = phys_equal
     let compare t1 t2 = if equal t1 t2 then 0 else Int.compare t1.u t2.u
-
-    let hashable = make_hashable ~hash ~compare (* used by witness calc *)
 
     let to_tag_string t = sprintf "%03d" (tag t)
 
@@ -365,21 +368,16 @@ module F(M:sig end) = struct
         ht : (form, t) Hashtbl.t;
       }
 
-      let hashable =
-        make_hashable
-          ~hash:(Form.hash ~hash)
-          ~compare:(Form.compare ~compare)
-
       let the_cache = {
         u = 0;
-        ht = Hashtbl.create ~hashable ();
+        ht = Hashtbl.create 100;
       }
 
       let lookup_or_add form ~f =
-        Hashtbl.find_or_add the_cache.ht form ~default:fun () ->
+        Hashtbl.find_or_add the_cache.ht form ~default:(fun () ->
           let u = 1 + the_cache.u in
           the_cache.u <- u;
-          f u
+          f u)
 
       let s_of_t_option opt =
         match opt with None -> "---" | Some t -> to_tag_string t
@@ -388,34 +386,35 @@ module F(M:sig end) = struct
 
       let print t0 =
         let cmp_u t1 t2 = Int.compare (tag t1) (tag t2) in
-        let all_sorted = List.sort ~cmp:cmp_u (Hashtbl.data the_cache.ht) in
-        let just_dfa_nodes = List.filter all_sorted ~f:(fun t -> t.is_state_of_dfa) in
+        let all_sorted = List.sort cmp_u (Hashtbl.data the_cache.ht) in
+        let just_dfa_nodes = List.filter (fun t -> t.is_state_of_dfa) all_sorted in
         let nodes =
           if !just_show_dfa_nodes then just_dfa_nodes else all_sorted
         in
-        List.iter nodes ~f:(fun t ->
+        List.iter (fun t ->
           message "%-2s%-80s  =  %s"
             (if Int.equal (tag t) (tag t0) then "*" else (* start node *)
                 if not !just_show_dfa_nodes && t.is_state_of_dfa then "x" else "")
             (sprintf "%03d  =  %s%s %s" (tag t)
-               (String.concat
-                  (List.map t.d_map ~f:fun (cset,r) ->
-                    sprintf "%s %s | " (Display.cset cset) (s_of_t_option (!r))))
+               (String.concat ""
+                  (List.map (fun (cset,r) ->
+                       sprintf "%s %s | " (Display.cset cset) (s_of_t_option (!r)))
+                   t.d_map))
                (Display.cspec Neg t.cover)
                (s_of_t_option t.d_unspec)
             )
             (to_string t)
-        );
+        ) nodes;
         let n,a,v = (* count - nodes,arcs,visited-arcs *)
-          List.fold just_dfa_nodes ~init:(0,0,0) ~f:fun (n,a,v) t ->
+          List.fold_left (fun (n,a,v) t ->
             let n = n + 1 in
             let a = a + 1 + List.length t.d_map in
             let v =
               v + (match (t.d_unspec) with | Some _ -> 1 | None -> 0) +
-                (List.fold t.d_map ~init:0
-                   ~f:fun n (_,r) -> match (!r) with None -> n | Some _ -> n + 1)
+                (List.fold_left
+                   (fun n (_,r) -> match (!r) with None -> n | Some _ -> n + 1) 0 t.d_map)
             in
-            n,a,v
+            n,a,v) (0,0,0) just_dfa_nodes
         in
         message "DFA: #nodes = %d, #arcs(fraction visited) = %d / %d" n v a
 
@@ -427,12 +426,12 @@ module F(M:sig end) = struct
     let firsts t = t.firsts
 
     let create rep  =
-      Cache.lookup_or_add rep ~f:fun u ->
+      Cache.lookup_or_add rep ~f:(fun u ->
         let firsts = Form.firsts ~firsts rep in
         let partition,`cover cover = partition_firsts firsts in
-        let d_map = List.map partition ~f:(fun x -> x,ref None) in
+        let d_map = List.map (fun x -> x,ref None) partition in
         let d_unspec = None in
-        let d_array = Array.create ~len:256 None in
+        let d_array = Array.make 256 None in
         let t = {
           rep;
           u;
@@ -443,7 +442,7 @@ module F(M:sig end) = struct
           d_map; d_unspec; d_array;
           is_state_of_dfa = false;
         } in
-        t
+        t)
 
     let is_eps t =
       match t.rep with
@@ -510,26 +509,26 @@ module F(M:sig end) = struct
 
     let filter_merge_csets xs =
       let yes,no =
-        List.partition_map xs ~f:(fun x -> match x.rep with
-        | Form.Poslit x -> `Fst (Pos,x)
-        | Form.Neglit x -> `Fst (Neg,x)
-        | _ -> `Snd x
-        )
+        List.partition_map (fun x -> match x.rep with
+        | Form.Poslit x -> Left (Pos,x)
+        | Form.Neglit x -> Left (Neg,x)
+        | _ -> Right x
+        ) xs
       in
       match yes with
       | [] -> no
       | x::xs ->
-        let (sense,cset) = List.fold xs ~init:x ~f:merge2_cspec in
+        let (sense,cset) = List.fold_left merge2_cspec x xs in
         lit sense cset :: no
 
 
     let alts xs =
-      let xs = List.concat_map xs
-        ~f:(fun x -> match x.rep with Form.Alts xs -> xs | _ -> [x]) in
+      let xs = List.concat_map
+        (fun x -> match x.rep with Form.Alts xs -> xs | _ -> [x]) xs in
       let xs = filter_merge_csets xs in
       let xs = sort_and_remove_dups ~compare xs in
       let xs = filter_out xs ~f:is_zero in
-      if List.exists xs ~f:is_dotstar then dotstar else
+      if List.exists is_dotstar xs then dotstar else
         match xs with
         | [x] -> x
         | xs -> create (Form.Alts xs)
@@ -541,7 +540,7 @@ module F(M:sig end) = struct
       | Form.Neglit cset -> if Cset.contains cset char then zero else eps
       | Form.Star t -> cat2 (deriv char t) t0
       | Form.Neg t -> neg (deriv char t)
-      | Form.Alts ts -> alts (List.map ts ~f:(deriv char))
+      | Form.Alts ts -> alts (List.map (deriv char) ts)
       | Form.Cat2 (t1,t2) ->
         if (nullable t1)
         then alts [cat2 (deriv char t1) t2 ; deriv char t2]
@@ -551,7 +550,7 @@ module F(M:sig end) = struct
     let array_get = Array.unsafe_get
 
     let rec deriv char t =
-      match array_get t.d_array (Char.to_int char) with Some t_res -> t_res | None ->
+      match array_get t.d_array (Char.code char) with Some t_res -> t_res | None ->
         let rec loop = function
           | (cset,doptref)::d_map ->
             if (Cset.contains cset char) then
@@ -560,9 +559,9 @@ module F(M:sig end) = struct
               | None ->
                 let t_res = deriv_form ~deriv char t in
                 doptref := Some t_res;
-                List.iter (Cset.rep cset) ~f:(fun x ->
-                  Array.set t.d_array (Char.to_int x) (Some t_res);
-                );
+                List.iter (fun x ->
+                  Array.set t.d_array (Char.code x) (Some t_res);
+                ) (Cset.rep cset);
                 t_res
             else
               loop d_map
@@ -573,9 +572,9 @@ module F(M:sig end) = struct
               assert (not (Cset.contains t.cover char));
               let t_res = deriv_form ~deriv char t in
               t.d_unspec <- Some t_res;
-              List.iter (Cset.rep (Cset.diff Cset.any t.cover)) ~f:(fun x ->
-                Array.set t.d_array (Char.to_int x) (Some t_res);
-              );
+              List.iter (fun x ->
+                Array.set t.d_array (Char.code x) (Some t_res);
+              ) (Cset.rep (Cset.diff Cset.any t.cover));
               t_res
         in
         loop t.d_map
@@ -593,42 +592,40 @@ module F(M:sig end) = struct
         | Form.Star t -> star (walk t)
         | Form.Neg t -> neg (walk t)
         | Form.Cat2 (t1,t2) -> cat2 (walk t2) (walk t1)
-        | Form.Alts ts -> alts (List.map ts ~f:walk)
+        | Form.Alts ts -> alts (List.map walk ts)
       in
       walk t0
 
     (* non-primitive builders *)
 
-    let conjs xs = neg (alts (List.map xs ~f:neg))
+    let conjs xs = neg (alts (List.map neg xs))
     let unanchor t = cat2 dotstar t
-    let cats xs = List.fold_right xs ~init:eps ~f:cat2
+    let cats xs = List.fold_right cat2 xs eps
     let one_of xs = poslit (Cset.create xs)
     let not_one_of xs = neglit (Cset.create xs)
     let dot = not_one_of []
     let char x = one_of [x]
-    let string string = cats (List.map (String.to_list string) ~f:char)
+    let string string = cats (List.map char (explode string))
     let query x = alts [eps; x]
     let plus x = cats [x; star x]
 
-
-    let repeat_count t n = assert(Int.(>=) n 0);
+    let repeat_count t n = assert(n >= 0);
       iterate n (cat2 t) eps
 
-    let repeat_count_or_more t n = assert(Int.(>=) n 0);
+    let repeat_count_or_more t n = assert(n >= 0);
       iterate n (cat2 t) (star t)
 
-    let repeat_count_range t n m = assert(Int.(>=) n 0); assert(Int.(>=) m n);
+    let repeat_count_range t n m = assert(n >= 0); assert(m >= n);
       let t_opt = query t in
       iterate (m-n) (cat2 t_opt) (repeat_count t n)
-
 
     (* [representative_first_chars t] returns a set of chars which if used to calc
        derivs of t we obtain a set of regexps which contains every regexp which
        can be obtained by forming a deriv of t for any char. *)
 
     let representative_first_chars t =
-      assert (List.for_all t.partition ~f:fun cset -> not (Cset.is_empty cset));
-      let chars = List.map t.partition ~f:Cset.pick_one_exn in
+      assert (List.for_all (fun cset -> not (Cset.is_empty cset)) t.partition);
+      let chars = List.map Cset.pick_one_exn t.partition in
       let rest = Cset.diff Cset.any t.cover in
       if (Cset.is_empty rest) then chars else
         Cset.pick_one_exn rest :: chars
@@ -636,13 +633,13 @@ module F(M:sig end) = struct
 
     let unroll_one_step t =
       let xs =
-        List.map t.partition
-          ~f:fun cset ->
+        List.map
+          (fun cset ->
             assert (not (Cset.is_empty cset));
             let char = Cset.pick_one_exn cset in
             let t' = deriv char t in
             let atom = (Pos,cset) in
-            atom,t'
+            atom,t') t.partition
       in
       let ys =
         let rest = Cset.diff Cset.any t.cover in
@@ -748,7 +745,7 @@ module F(M:sig end) = struct
                       number i ~acc:d xs (fun i ~num:m x xs ->
                         match x with
                         | '}' ->
-                          if Int.(<) m n then err i "{n,m} - m must be bigger than n" else
+                          if m < n then err i "{n,m} - m must be bigger than n" else
                             cont i ~rep_f:(fun t -> Gold.repeat_count_range t n m) xs
                         | _ -> err i "unexpected char in {..}"
                       )
@@ -863,7 +860,7 @@ module F(M:sig end) = struct
               (Some (Gold.char c)) xs
       in
       fun pat ->
-        let xs = String.to_list pat in
+        let xs = explode pat in
         loop 0 None [] [] [] Pos [] None xs
 
     let parse pat =
@@ -881,7 +878,7 @@ module F(M:sig end) = struct
     let parse_exn ~pat =
       match (parse ~pat) with
       | `Ok x -> x
-      | `Error (s,i) -> failwithf "red parser -- %s -- char %d" s i ()
+      | `Error (s,i) -> failwith (sprintf "red parser -- %s -- char %d" s i)
 
   end
 
@@ -932,7 +929,7 @@ module F(M:sig end) = struct
     let parse_exn ~pat =
       match (parse ~pat) with
       | `Ok x -> x
-      | `Error (s,i) -> failwithf "red parser -- %s -- char %d" s i ()
+      | `Error (s,i) -> failwith (sprintf "red parser -- %s -- char %d" s i)
 
     let to_string t =
       sprintf "%s%s%s"
@@ -948,8 +945,7 @@ module F(M:sig end) = struct
   let parse_exn = Toplevel.parse_exn
   let to_string = Toplevel.to_string
 
-  (*let string_get = String.get*)
-  let string_get = Caml.StringLabels.unsafe_get
+  let string_get = String.get
 
   let search_first t string ~start_pos ~last_pos ~step =
     let rec loop t i =
@@ -1086,7 +1082,7 @@ module F(M:sig end) = struct
           | `rightmost_longest -> search_style `last
           | `leftmost_longest -> search_style `last
         )
-          r_gold s ~start_pos:(n-1) ~last_pos:(start_pos-1) ~step:-1
+          r_gold s ~start_pos:(n-1) ~last_pos:(start_pos-1) ~step:(-1)
         with
         | None -> None
         | Some i -> Some (i+1,n)
@@ -1193,14 +1189,32 @@ module F(M:sig end) = struct
   (* witness calculation... *)
   (* witness - find a path to a nullable state if one exists...  *)
 
+  module Set =
+    Stdlib.Set.Make(struct
+        type t = Gold.t
+        let compare = Sub.compare
+      end)
+
+  module MutSet : sig
+    type t
+    val create : unit -> t
+    val mem : t -> Gold.t -> bool
+    val add : t -> Gold.t -> unit
+  end = struct
+    type t = { mutable set : Set.t }
+    let create () = { set = Set.empty }
+    let add t x = t.set <- Set.add x t.set
+    let mem t x = Set.mem x t.set
+  end
+
   (* fail-continuation version - avoid blowing stack *)
   let witness t =
-    let visited = Hash_set.create ~hashable:Gold.hashable () in
+    let visited = MutSet.create () in
     let rec wit t ~path ~fail =
       if Gold.is_zero t then fail() else
-        if Hash_set.mem visited t then fail() else
-          if Gold.nullable t then Some (String.of_char_list (List.rev path)) else
-            let () = Hash_set.add visited t in
+        if MutSet.mem visited t then fail() else
+          if Gold.nullable t then Some (implode (List.rev path)) else
+            let () = MutSet.add visited t in
             let rec loop = function
               | [] -> fail()
               | char::chars ->
@@ -1273,12 +1287,12 @@ module F(M:sig end) = struct
           sprintf "%s %s" (Gold.to_string (Path.to_gold path)) (Gold.to_tag_string t)
       in
       fun t ->
-        sprintf "(%s)" (String.concat ~sep:" + " (List.map t.routes ~f:route_to_string))
+        sprintf "(%s)" (String.concat " + " (List.map route_to_string t.routes))
 
     let zero = { routes = [] }
     let empty = { routes = [Path Path.empty] }
     let cycle gold = { routes = [Cycle (Path.empty,gold)] }
-    let alt ts = { routes = List.concat_map ts ~f:fun t -> t.routes }
+    let alt ts = { routes = List.concat_map (fun t -> t.routes) ts }
 
     let cons_path_to_route x = function
       | Path p -> Path (Path.seq x p)
@@ -1287,27 +1301,27 @@ module F(M:sig end) = struct
 
     let collect_up_common xs =
       let non_cycles,cycles =
-        List.partition_map xs ~f:function
-        | Path p -> `Fst p
-        | Cycle (p,g) -> `Snd (p,g)
+        List.partition_map (function
+        | Path p -> Left p
+        | Cycle (p,g) -> Right (p,g)) xs
       in
       let collected_cycles =
         let compare_gold_cycle (_,g1) (_,g2) = Gold.compare g1 g2 in
         let not_eq_gold_cycle (_,g1) (_,g2) = not (Gold.equal g1 g2) in
-        let cycles = List.sort cycles ~cmp:compare_gold_cycle in
+        let cycles = List.sort compare_gold_cycle cycles in
         let grouped = List.group cycles ~break:not_eq_gold_cycle in
-        List.map grouped ~f:function [] -> assert false | (p,g)::xs ->
+        List.map (function [] -> assert false | (p,g)::xs ->
           Cycle (Path.alt (p ::
-                              List.map xs ~f:(fun (p,g') ->
+                              List.map (fun (p,g') ->
                                 assert (Gold.equal g g');
-                                p))
-                    , g)
+                                p) xs)
+                    , g)) grouped
       in
       Path (Path.alt non_cycles) :: collected_cycles
 
 
     let cons_path path routes = {
-      routes = List.map (collect_up_common routes) ~f:(cons_path_to_route path)
+      routes = List.map (cons_path_to_route path) (collect_up_common routes)
     }
 
     let prefix gold t = cons_path (Path.atom gold) t.routes
@@ -1336,7 +1350,7 @@ module F(M:sig end) = struct
               (Gold.to_tag_string g); loop acc xs*)
         in loop [] t.routes
       in
-      let gold = Gold.alts (List.map paths ~f:Path.to_gold) in
+      let gold = Gold.alts (List.map Path.to_gold paths) in
       gold
 
 
@@ -1353,24 +1367,24 @@ module F(M:sig end) = struct
           if !debug then message "%swander: %s -> zero" !tab (Gold.to_tag_string gold);
           Routes.zero
         )else
-          match (Set.mem visiting gold) with
+          match (Set.mem gold visiting) with
           | true ->
             if !debug then message "%swander: %s -> cycle" !tab (Gold.to_tag_string gold);
             Routes.cycle gold
           | false ->
-            let visiting = Set.add visiting gold in
+            let visiting = Set.add gold visiting in
             let unrolled = Gold.unroll_one_step gold in
             if !debug then message "%swander(pre): %s = %s = %s" !tab
               (Gold.to_tag_string gold) (Gold.to_string gold)
-              (String.concat ~sep:" / "
-                 (List.map unrolled ~f:fun ((sense,cset),gold) ->
+              (String.concat " / "
+                 (List.map (fun ((sense,cset),gold) ->
                    sprintf "%s %s"
                      (Gold.to_string (Gold.lit sense cset)) (Gold.to_tag_string gold)
-                  ));
+                  ) unrolled));
             let routes =
               Routes.alt (
-                List.map unrolled ~f:fun ((sense,cset),gold) ->
-                  Routes.prefix (Gold.lit sense cset)  (wander visiting gold)
+                List.map (fun ((sense,cset),gold) ->
+                  Routes.prefix (Gold.lit sense cset)  (wander visiting gold)) unrolled
               )
             in
             let routes =
@@ -1388,7 +1402,7 @@ module F(M:sig end) = struct
       tab := old_tab;
       routes
     in
-    let visiting = Set.Poly.empty in
+    let visiting = Set.empty in
     let routes = wander visiting gold in
     let gold = Routes.to_gold_after_cycles_are_removed routes in
     gold
@@ -1400,13 +1414,13 @@ end
 (* useful combinations of functor-app, parse & search *)
 
 let search_exn ~pat =
-  let module Red = F(struct end) in
+  let module Red = F() in
   let red = Red.parse_exn ~pat in
   fun ?strat s -> (* note staging *)
     Red.search red ?strat s
 
 let select_exn ~pat =
-  let module Red = F(struct end) in
+  let module Red = F() in
   let red = Red.parse_exn ~pat in
   fun ?strat s -> (* note staging *)
     match (Red.search red ?strat s) with
@@ -1414,7 +1428,7 @@ let select_exn ~pat =
     | Some (p,q) -> Some (String.slice s p q)
 
 let matches_exn ~pat =
-  let module Red = F(struct end) in
+  let module Red = F() in
   let red = Red.parse_exn ~pat in
   fun s -> (* note staging *)
     Red.matches red s

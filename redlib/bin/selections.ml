@@ -1,8 +1,9 @@
-
-open Core.Std
+open Printf
 open Redlib
-module Red = Red.F(struct end)
+module Red = Red.F()
 module R = Red.Sub
+
+let contents ~file = In_channel.(with_open_text file input_all)
 
 let search_multi ~pat s =
   let n = String.length s in
@@ -37,16 +38,6 @@ let search_multi_negative ~pat s =
   in
   loop 0 []
 
-
-let selections ~pat s =
-  List.map (search_multi ~pat s) ~f:fun (p,q) ->
-    String.slice s p q
-
-let split ~pat s =
-  List.map (search_multi_negative ~pat s) ~f:fun (p,q) ->
-    String.slice s p q
-
-
 let message fmt = ksprintf (fun s -> printf "%s\n%!" s) fmt
 
 let progname = Array.get Sys.argv 0
@@ -65,18 +56,17 @@ let parse_command_line() =
   | [pat;filename] -> pat,Some filename,!v
   | _ -> eprintf "%s\n" usage; exit 1
 
-
 let _ =
   let pat,file_opt,arg_v = parse_command_line () in
   let s =
     match file_opt with
-    | Some file -> In_channel.read_all file
+    | Some file -> contents ~file
     | None -> In_channel.input_all In_channel.stdin
   in
   let xs =
     (if arg_v then search_multi_negative else search_multi) ~pat s
   in
-  List.iter xs ~f:fun (p,q) ->
+  List.iter (fun (p,q) ->
     (*message "%s(%d,%d)" (String.slice s p q) p q*)
-    message "%s" (String.slice s p q)
+    message "%s" (String.sub s p (q-p))) xs
 

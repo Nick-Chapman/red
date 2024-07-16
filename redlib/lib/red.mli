@@ -22,7 +22,7 @@ type strat =
 
 (* Lazily generated DFA cache lives for the dynamic extent of the functor application *)
 
-module F (M:sig end) : sig
+module F () : sig
 
   type t
 

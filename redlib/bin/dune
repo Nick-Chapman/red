@@ -1,0 +1,5 @@
+(executables
+ (names all_of none_of re_select re_select_all grep re_comp re_transform selections)
+ (libraries redlib))
+
+(cram (deps grep.exe))

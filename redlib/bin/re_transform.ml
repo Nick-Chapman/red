@@ -1,8 +1,6 @@
-
-open Core.Std
+open Printf
 open Redlib
-
-module Red = Red.F(struct end)
+module Red = Red.F()
 
 let logf fmt = ksprintf (fun s -> printf "%s\n%!" s) fmt
 let bar = "----------------------------------------------------------------------"
